@@ -133,6 +133,18 @@ namespace xdp::aie {
     return *hwGen;
   }
 
+  // On Edge devices, AIE clock frequency shouldn't change once execution has started.
+  // On Client devices, this static information from metadata may not be correct.
+  double getAIEClockFreqMHz(const boost::property_tree::ptree& aie_meta,
+                            const std::string& root)
+  {
+    static std::optional<double> clockFreqMHz;
+    if (!clockFreqMHz.has_value()) {
+      clockFreqMHz = aie_meta.get_child(root).get_value<double>();
+    }
+    return *clockFreqMHz;
+  }
+
   /****************************************************************************
    * Get metadata required to configure driver
    ***************************************************************************/
@@ -320,6 +332,17 @@ namespace xdp::aie {
   }
 
   /****************************************************************************
+   * Get string representation of relative row of given tile
+   ***************************************************************************/
+  std::string
+  getRelativeRowStr(uint8_t absRow, uint8_t rowOffset)
+  {
+    uint8_t relativeRow = aie::getRelativeRow(absRow, rowOffset);
+
+    return std::to_string(+relativeRow);
+  }
+
+  /****************************************************************************
    * Get module type
    ***************************************************************************/
   module_type 
@@ -400,6 +423,18 @@ namespace xdp::aie {
       return infoPt;
     }
     return infoPt;
+  }
+
+  void displayColShiftInfo(uint8_t colShift)
+  {
+    static bool displayed = false;
+    if (colShift>0 && !displayed) {
+      std::stringstream msg;
+      msg << "Partition start column shift of " << +colShift << " was found."
+          << " Tile locations are adjusted by this column shift.";
+      xrt_core::message::send(severity_level::info, "XRT", msg.str());
+      displayed = true;
+    }
   }
 
 } // namespace xdp::aie

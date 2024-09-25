@@ -9,6 +9,7 @@
 #include "xrt/xrt_device.h"
 #include "xrt/xrt_hw_context.h"
 #include "xrt/xrt_kernel.h"
+#include <experimental/xrt_kernel.h>
 namespace XBU = XBUtilities;
 
 #include <filesystem>
@@ -28,10 +29,23 @@ TestNPULatency::run(std::shared_ptr<xrt_core::device> dev)
   boost::property_tree::ptree ptree = get_test_header();
   ptree.erase("xclbin");
 
+  try {
+    set_threshold(dev, ptree);
+    if(XBU::getVerbose())
+      logger(ptree, "Details", boost::str(boost::format("Threshold is %.1f us") % get_threshold()));
+  }
+  catch (const std::runtime_error& ex) {
+    logger(ptree, "Details", ex.what());
+    ptree.put("status", test_token_skipped);
+    return ptree;
+  }
+
   const auto xclbin_name = xrt_core::device_query<xrt_core::query::xclbin_name>(dev, xrt_core::query::xclbin_name::type::validate);
   auto xclbin_path = findPlatformFile(xclbin_name, ptree);
-  if (!std::filesystem::exists(xclbin_path))
+  if (!std::filesystem::exists(xclbin_path)){
+    logger(ptree, "Details", "The test is not supported on this device.");
     return ptree;
+  }
 
   logger(ptree, "Xclbin", xclbin_path);
 
@@ -80,42 +94,56 @@ TestNPULatency::run(std::shared_ptr<xrt_core::device> dev)
     return ptree;
   }
 
-  //Create BOs, the values are not initialized as they are not really used by this special test running on the device
-  int argno = 1;
-  xrt::bo bo_ifm(working_dev, buffer_size, XRT_BO_FLAGS_HOST_ONLY, testker.group_id(argno++));
-  xrt::bo bo_param(working_dev, buffer_size, XRT_BO_FLAGS_HOST_ONLY, testker.group_id(argno++));
-  xrt::bo bo_ofm(working_dev, buffer_size, XRT_BO_FLAGS_HOST_ONLY, testker.group_id(argno++));
-  xrt::bo bo_inter(working_dev, buffer_size, XRT_BO_FLAGS_HOST_ONLY, testker.group_id(argno++));
-  xrt::bo bo_instr(working_dev, buffer_size, XCL_BO_FLAGS_CACHEABLE, testker.group_id(argno++));
-  argno++;
-  xrt::bo bo_mc(working_dev, buffer_size, XRT_BO_FLAGS_HOST_ONLY, testker.group_id(argno++));
-  //Create ctrlcode with NOPs
-  std::memset(bo_instr.map<char*>(), 0, buffer_size);
+  xrt::xclbin::ip cu;
+  for (const auto& ip : xclbin.get_ips()) {
+    if (ip.get_type() != xrt::xclbin::ip::ip_type::ps)
+      continue;
+    cu = ip;
+    break;
+  }
 
-  //Sync BOs
-  bo_instr.sync(XCL_BO_SYNC_BO_TO_DEVICE);
-  bo_ifm.sync(XCL_BO_SYNC_BO_TO_DEVICE);
-  bo_param.sync(XCL_BO_SYNC_BO_TO_DEVICE);
-  bo_mc.sync(XCL_BO_SYNC_BO_TO_DEVICE);
+  std::vector<xrt::bo> global_args;
+
+  // create specified a run and populate with arguments
+  auto run = xrt::run(testker);
+  for (const auto& arg : cu.get_args()) {
+    auto arg_idx = static_cast<int>(arg.get_index());
+    if (arg.get_host_type() == "uint64_t")
+      run.set_arg(arg_idx, static_cast<uint64_t>(1));
+    else if (arg.get_host_type() == "uint32_t")
+	    run.set_arg(arg_idx, static_cast<uint32_t>(1));
+    else if (arg.get_host_type().find('*') != std::string::npos) {
+      xrt::bo bo;
+
+      if (arg.get_name() == "instruct")
+        bo = xrt::bo(hwctx, arg.get_size(), xrt::bo::flags::cacheable, testker.group_id(arg_idx));
+      else 
+        bo = xrt::bo(working_dev, arg.get_size(), xrt::bo::flags::host_only, testker.group_id(arg_idx));
+
+      bo.sync(XCL_BO_SYNC_BO_TO_DEVICE);
+      global_args.push_back(bo);
+	    run.set_arg(arg_idx, bo);
+    }
+  } 
+
   //Log
   if(XBU::getVerbose()) {
-    logger(ptree, "Details", boost::str(boost::format("Instruction size: '%f' bytes") % buffer_size));
-    logger(ptree, "Details", boost::str(boost::format("No. of iterations: '%f'") % itr_count));
+    logger(ptree, "Details", boost::str(boost::format("Instruction size: %f bytes") % buffer_size));
+    logger(ptree, "Details", boost::str(boost::format("No. of iterations: %f") % itr_count));
   }
 
   // Run the test to compute latency where we submit one job at a time and wait for its completion before
   // we submit the next one
-  float elapsedSecs = 0.0;
+  double elapsed_secs = 0.0;
 
   try {
     auto start = std::chrono::high_resolution_clock::now();
     for (int i = 0; i < itr_count; i++) {
-      auto hand = testker(host_app, bo_ifm, bo_param, bo_ofm, bo_inter, bo_instr, buffer_size, bo_mc);
-      // Wait for kernel to be done
-      hand.wait2();
+      run.start();
+      run.wait2();
     }
     auto end = std::chrono::high_resolution_clock::now();
-    elapsedSecs = std::chrono::duration_cast<std::chrono::duration<float>>(end-start).count();
+    elapsed_secs = std::chrono::duration_cast<std::chrono::duration<double>>(end-start).count();
   }
   catch (const std::exception& ex) {
     logger(ptree, "Error", ex.what());
@@ -123,8 +151,11 @@ TestNPULatency::run(std::shared_ptr<xrt_core::device> dev)
   }
 
   // Calculate end-to-end latency of one job execution
-  const float latency = (elapsedSecs / itr_count) * 1000000; //convert s to us
-  logger(ptree, "Details", boost::str(boost::format("Average latency: '%.1f' us") % latency));
-  ptree.put("status", test_token_passed);
+  const double latency = (elapsed_secs / itr_count) * 1000000; //convert s to us
+
+  //check if the value is in range
+  result_in_range(latency, get_threshold(), ptree);
+
+  logger(ptree, "Details", boost::str(boost::format("Average latency: %.1f us") % latency));
   return ptree;
 }

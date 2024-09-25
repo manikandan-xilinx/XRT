@@ -53,22 +53,26 @@ namespace xdp::aie {
 
   XDP_CORE_EXPORT
   int getHardwareGeneration(const boost::property_tree::ptree& aie_meta,
-                          const std::string& root);
+                            const std::string& root);
+
+  XDP_CORE_EXPORT
+  double getAIEClockFreqMHz(const boost::property_tree::ptree& aie_meta,
+                            const std::string& root);
 
   XDP_CORE_EXPORT
   xdp::aie::driver_config
   getDriverConfig(const boost::property_tree::ptree& aie_meta,
-                const std::string& root);
+                  const std::string& root);
   
   XDP_CORE_EXPORT
   uint8_t
   getAIETileRowOffset(const boost::property_tree::ptree& aie_meta,
-                    const std::string& location);
+                      const std::string& location);
   
   XDP_CORE_EXPORT
   std::vector<std::string>
   getValidGraphs(const boost::property_tree::ptree& aie_meta,
-                const std::string& root);
+                 const std::string& root);
 
   XDP_CORE_EXPORT
   bool isInfoVerbosity();
@@ -81,6 +85,9 @@ namespace xdp::aie {
   
   XDP_CORE_EXPORT
   uint8_t getRelativeRow(uint8_t absRow, uint8_t rowOffset);
+
+  XDP_CORE_EXPORT
+  std::string getRelativeRowStr(uint8_t absRow, uint8_t rowOffset);
   
   XDP_CORE_EXPORT
   module_type getModuleType(uint8_t absRow, uint8_t rowOffset);
@@ -103,6 +110,9 @@ namespace xdp::aie {
   XDP_CORE_EXPORT
   boost::property_tree::ptree
   getAIEPartitionInfoClient(void* hwCtxImpl);
+
+  XDP_CORE_EXPORT
+  void displayColShiftInfo(uint8_t colShift);
 
 } // namespace xdp::aie
 
